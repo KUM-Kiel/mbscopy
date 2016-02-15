@@ -1,41 +1,66 @@
-/* Suche "\xf0\x00\x00\x20\x00\x01"
- * Adresse - 0x8000
- * unpack("L>L>")[1] * 512 Bytes lesen */
+/* Lukas Joeressen (c) 2016. */
 
 #define _FILE_OFFSET_BITS 64
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
+#include <errno.h>
+
+static int32_t ld_i32_le(const void *x)
+{
+  int32_t r = ((int8_t *) x)[3];
+  r <<= 8; r += ((uint8_t *) x)[2];
+  r <<= 8; r += ((uint8_t *) x)[1];
+  r <<= 8; r += ((uint8_t *) x)[0];
+  return r;
+}
+
+static const char *because(int e)
+{
+  switch (e) {
+    case ENOENT: return " because it does not exist";
+    case EACCES: return " because the permission was denied";
+    default:     return "";
+  }
+}
 
 int main(int argc, char **argv)
 {
   FILE *card = 0, *mbs_sys = 0, *mbs_data = 0;
   char str[512];
-  int c, i, l;
+  int c, i, l, e;
   int64_t pos, size;
   char buffer[0x8000];
   char *this_disk, *file_name, *x;
 
   if (argc < 2) {
-    fprintf(stderr, "Usage: %s /dev/sdX\n", argv[0]);
+    fprintf(stderr,
+      "mbscopy 1.0.0\n"
+      "Lukas Joeressen (c) 2016\n"
+      "\n"
+      "Usage: %s /dev/sdX\n",
+      argv[0]);
     return 1;
   }
 
   /* Open the card. */
   card = fopen(argv[1], "rb");
   if (!card) {
+    e = errno;
     snprintf(str, sizeof(str), "/dev/%s", argv[1]);
     card = fopen(str, "rb");
   }
   if (!card) {
-    fprintf(stderr, "Could not open »%s«. Sorry!\n", argv[1]);
+    fprintf(stderr, "Could not open »%s«%s. Sorry!\n", argv[1], because(e));
     return 1;
   }
 
-  /* Search for magic pattern. */
+  /* Search for magic pattern f0 00 00 20 00 01. */
   i = 0;
+  pos = 0x10000;
   if (fseek(card, 0x10000, SEEK_SET) == -1) goto io_error;
   while ((c = getc(card)) != EOF) {
+    if (pos++ > 0x100000) break;
     switch (c) {
     case 0xf0:
       i = 1;
@@ -64,12 +89,8 @@ found:
   /* Inspect header. */
   if (fseek(card, pos - 0x8000, SEEK_SET) == -1) goto io_error;
   if (fread(buffer, 0x8000, 1, card) != 1) goto io_error;
-  size = 0;
-  for (i = 0; i < 4; ++i) {
-    size <<= 8;
-    size += buffer[7 - i];
-  }
-  if (size == 0) {
+  size = ld_i32_le(buffer + 4);
+  if (size <= 0) {
     fprintf(stderr, "The data seems pretty corrupted. That is quite problematic!\n");
     return 1;
   }
@@ -110,7 +131,7 @@ found:
   /* Write MBS.SYS to disk. */
   mbs_sys = fopen("MBS.SYS", "wb");
   if (!mbs_sys) {
-    fprintf(stderr, "Could not create »MBS.SYS«. Sorry!\n");
+    fprintf(stderr, "Could not create »MBS.SYS«%s. Sorry!\n", because(errno));
     return 1;
   }
   if (fwrite(buffer, 0x8000, 1, mbs_sys) != 1) goto io_error;
@@ -120,7 +141,7 @@ found:
   fprintf(stderr, "Found »%s«\n", str);
   mbs_data = fopen(str, "wb");
   if (!mbs_data) {
-    fprintf(stderr, "Could not create »%s«. Sorry!\n", str);
+    fprintf(stderr, "Could not create »%s«%s. Sorry!\n", str, because(errno));
     return 1;
   }
   if (fseek(card, pos - 0x8000, SEEK_SET) == -1) goto io_error;
